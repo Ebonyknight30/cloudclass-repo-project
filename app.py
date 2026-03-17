@@ -16,6 +16,16 @@ def init_db():
             created_at TEXT NOT NULL
         )
     """)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS services (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        service_type TEXT NOT NULL,
+        description TEXT,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        completed_at TEXT
+    )
+    """)
     conn.commit()
     conn.close()
 
@@ -143,6 +153,66 @@ def generate_report_data():
         },
         "app_name": os.getenv("APP_NAME", "Internal Utility Service"),
     }
+
+
+def get_all_services():
+    conn = db_connect()
+    rows = conn.execute("""
+        SELECT id, service_type, description, status, created_at, completed_at
+        FROM services
+        ORDER BY id DESC
+    """).fetchall()
+    conn.close()
+    return rows
+
+
+def get_service_by_id(service_id: int):
+    conn = db_connect()
+    row = conn.execute("""
+        SELECT id, service_type, description, status, created_at, completed_at
+        FROM services
+        WHERE id = ?
+    """, (service_id,)).fetchone()
+    conn.close()
+    return row
+
+
+def insert_service(service_type: str, description: str):
+    conn = db_connect()
+    conn.execute("""
+        INSERT INTO services (service_type, description, status, created_at, completed_at)
+        VALUES (?, ?, ?, ?, ?)
+    """, (
+        service_type,
+        description,
+        "pending",
+        datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+        None
+    ))
+    conn.commit()
+    conn.close()
+
+
+def update_service_status(service_id: int, new_status: str):
+    completed_at = None
+    if new_status == "completed":
+        completed_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    conn = db_connect()
+    conn.execute("""
+        UPDATE services
+        SET status = ?, completed_at = ?
+        WHERE id = ?
+    """, (new_status, completed_at, service_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_service(service_id: int):
+    conn = db_connect()
+    conn.execute("DELETE FROM services WHERE id = ?", (service_id,))
+    conn.commit()
+    conn.close()
 
 @app.get("/")
 def home():
@@ -312,7 +382,146 @@ def report():
     </html>
     """
 
-    
+@app.get("/services")
+def services():
+    services = get_all_services()
+
+    rows_html = "".join(f"""
+        <tr>
+            <td>{s['id']}</td>
+            <td>{s['service_type']}</td>
+            <td>{s['description'] or ''}</td>
+            <td>{s['status']}</td>
+            <td>{s['created_at']}</td>
+            <td>{s['completed_at'] or '-'}</td>
+            <td>
+                <a href="/services/{s['id']}">View</a> |
+                <a href="/services/delete/{s['id']}" style="color:#c00;">Delete</a>
+            </td>
+        </tr>
+    """ for s in services)
+
+    if not rows_html:
+        rows_html = """
+        <tr>
+            <td colspan="7"><i>No service requests yet.</i></td>
+        </tr>
+        """
+
+    return f"""
+    <html>
+      <head><title>Service Management</title></head>
+      <body style="font-family: sans-serif; max-width: 1000px; margin: 40px auto;">
+        <h1>Service Management System</h1>
+        <p><a href="/">← Back to Home</a></p>
+
+        <h2>Create Service Request</h2>
+        <form method="POST" action="/services/add">
+          <label><b>Service Type:</b></label><br/>
+          <select name="service_type">
+            <option value="Generate Report">Generate Report</option>
+            <option value="Run Vitals Check">Run Vitals Check</option>
+            <option value="Export Notes">Export Notes</option>
+            <option value="Archive Notes">Archive Notes</option>
+          </select>
+          <br/><br/>
+
+          <label><b>Description:</b></label><br/>
+          <input name="description" style="width: 70%;" placeholder="Optional description..." />
+          <br/><br/>
+
+          <button type="submit">Create Request</button>
+        </form>
+
+        <hr/>
+
+        <h2>All Service Requests</h2>
+        <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%;">
+          <tr>
+            <th>ID</th>
+            <th>Service Type</th>
+            <th>Description</th>
+            <th>Status</th>
+            <th>Created At</th>
+            <th>Completed At</th>
+            <th>Actions</th>
+          </tr>
+          {rows_html}
+        </table>
+      </body>
+    </html>
+    """
+
+@app.post("/services/add")
+def add_service():
+    service_type = (request.form.get("service_type") or "").strip()
+    description = (request.form.get("description") or "").strip()
+
+    if service_type:
+        insert_service(service_type, description[:300])
+
+    return redirect(url_for("services"))
+
+
+@app.get("/services/<int:service_id>")
+def service_detail(service_id: int):
+    service = get_service_by_id(service_id)
+
+    if not service:
+        return "<h1>Service request not found.</h1>", 404
+
+    return f"""
+    <html>
+      <head><title>Service Request #{service['id']}</title></head>
+      <body style="font-family: sans-serif; max-width: 760px; margin: 40px auto;">
+        <h1>Service Request #{service['id']}</h1>
+        <p><a href="/services">← Back to Service Management</a></p>
+
+        <ul>
+          <li><b>Service Type:</b> {service['service_type']}</li>
+          <li><b>Description:</b> {service['description'] or '-'}</li>
+          <li><b>Status:</b> {service['status']}</li>
+          <li><b>Created At:</b> {service['created_at']}</li>
+          <li><b>Completed At:</b> {service['completed_at'] or '-'}</li>
+        </ul>
+
+        <h2>Update Status</h2>
+        <form method="POST" action="/services/update/{service['id']}">
+          <select name="status">
+            <option value="pending">pending</option>
+            <option value="in_progress">in_progress</option>
+            <option value="completed">completed</option>
+            <option value="failed">failed</option>
+          </select>
+          <button type="submit">Update Status</button>
+        </form>
+
+        <p style="margin-top: 20px;">
+          <a href="/services/delete/{service['id']}" style="color:#c00;">Delete this request</a>
+        </p>
+      </body>
+    </html>
+    """
+
+
+@app.post("/services/update/<int:service_id>")
+def service_update(service_id: int):
+    new_status = (request.form.get("status") or "").strip()
+
+    if new_status in ["pending", "in_progress", "completed", "failed"]:
+        update_service_status(service_id, new_status)
+
+    return redirect(url_for("service_detail", service_id=service_id))
+
+
+@app.get("/services/delete/<int:service_id>")
+def service_delete_route(service_id: int):
+    delete_service(service_id)
+    return redirect(url_for("services"))
+
+
+
+
 
 if __name__ == "__main__":
     init_db()

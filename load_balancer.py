@@ -22,4 +22,4 @@ def balance():
     return (resp.content, resp.status_code, resp.headers.items())
 
 if __name__ == "__main__":
-    load_balancer.run(port=8000, debug=False)
+    load_balancer.run(host="0.0.0.0", port=3000)
